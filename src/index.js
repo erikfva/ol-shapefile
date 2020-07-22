@@ -4,18 +4,22 @@ import Map from "ol/Map";
 import View from "ol/View";
 import GeoJSON from "ol/format/GeoJSON";
 import Circle from "ol/geom/Circle";
-import {
-  Tile as TileLayer,
-  Vector as VectorLayer,
-  Group as olGroup,
-} from "ol/layer";
+import { Tile as TileLayer, Vector as VectorLayer } from "ol/layer";
 import { OSM, Vector as VectorSource } from "ol/source";
 import { Circle as CircleStyle, Fill, Stroke, Style } from "ol/style";
 
-import { UncompressBlobFile, isZipFile } from "./utils/Zip";
+import { CompressBlobFiles, UncompressBlobFile, isZipFile } from "./utils/Zip";
+import SaveBlob from "./utils/SaveBlobFile";
 
 const workerShapefile2Geojson = new Worker(
   "./utils/Shapefile2Geojson.worker.js",
+  {
+    type: "module",
+  }
+);
+
+const workerGeojson2Shapefile = new Worker(
+  "./utils/Geojson2Shapefile.worker.js",
   {
     type: "module",
   }
@@ -89,6 +93,29 @@ const addGeojsonLayerPart = function (olMap, geojson) {
   console.log("finish addGeojsonLayer", new Date().toLocaleTimeString());
 };
 
+const download = function (geojson, filename) {
+  const process = new Promise((resolve, reject) => {
+    try {
+      workerGeojson2Shapefile.onmessage = async (e) => {
+        console.log(e);
+        if (e.data.error) {
+          return reject(e.data.error);
+        }
+        console.log("worker", new Date().toLocaleTimeString());
+        const blobZip = await CompressBlobFiles(e.data.shapefile);
+        SaveBlob(filename + ".zip", blobZip, (err) => {
+          if (err) return reject(err);
+          resolve(true);
+        });
+      };
+      workerGeojson2Shapefile.postMessage({ geojson, filename });
+    } catch (error) {
+      return reject(err.message ? err.message : err);
+    }
+  });
+  return process;
+};
+
 const upload = function (file) {
   const process = new Promise(async (resolve, reject) => {
     try {
@@ -131,23 +158,36 @@ document.getElementById("upload").addEventListener(
     try {
       let geojson = JSON.parse(await upload(file));
       addGeojsonLayer(map, geojson);
-    } catch (error) {}
-
-    /*
-    const { geojson, err } = await upload(file);
-    if (err) {
-      return alert(err);
+    } catch (error) {
+      alert(error);
     }
-    addGeojsonLayer(map, geojson);
-    */
   },
   false
 );
 document.getElementById("clear-last").addEventListener(
   "click",
-  async (e) => {
-    let layer = map._layers[map._layers.length - 1];
-    map.removeLayer(layer);
+  () => {
+    map.getLayers().getLength() > 1 && map.getLayers().pop();
+  },
+  false
+);
+document.getElementById("download-last").addEventListener(
+  "click",
+  async () => {
+    if (map.getLayers().getLength() > 1) {
+      try {
+        const layer = map.getLayers().item(map.getLayers().getLength() - 1);
+        const writer = new GeoJSON({
+          projection: "EPSG:4326",
+          featureProjection: "EPSG:3857",
+        });
+        const geojson = writer.writeFeatures(layer.getSource().getFeatures());
+
+        await download(geojson, "geovision");
+      } catch (error) {
+        alert(error);
+      }
+    }
   },
   false
 );
